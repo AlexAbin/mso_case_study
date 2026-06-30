@@ -93,7 +93,7 @@ function plot_convergence(dts, objs, times)
     fig = Figure(size = (800, 400))
 
     # Cost 
-    ax1 = CairoMakie.Axis(fig[1, 1], xlabel = "Step Size (dt)", ylabel = "ObjectiveCost")
+    ax1 = CairoMakie.Axis(fig[1, 1], xlabel = "Step Size (dt)", ylabel = "Objective Value")
     lines!(ax1, dts, objs, color = :blue, linewidth = 2)
     scatter!(ax1, dts, objs, color = :blue, markersize = 12)
     ax1.xreversed = true

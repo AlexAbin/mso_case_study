@@ -15,12 +15,12 @@ function mass_spring_damper!(du, u, p, t)
     x1, x2, x3  = u[1], u[2], u[3]
     v1, v2, v3  = u[4], u[5], u[6]
 
-    f  = p[1]
-    fe = p[2]
-    ff = p[3]
-    k  = p[4]
-    c  = p[5]
-    m  = p[6]
+    f    = p[1]
+    fe   = p[2]
+    ff   = p[3]
+    k    = p[4]
+    c    = p[5]
+    m    = p[6]
     l_12 = p[7]
     l_23 = p[8]
 
@@ -40,7 +40,21 @@ u0 = [0.0, 1.0, 2.0, 0.0, 0.0, 0.0, 0.0]
 p0 = [0.0, 0.0, 0.0, 1.0, 2.0, 2.0, 1.0, 1.0]
 prob = ODEProblem(mass_spring_damper!, u0, tspan, p0)
 
+cgrid = collect(0.0:0.2:10)
 
+control_f = ControlParameter(
+    cgrid,
+    name     = :f,
+    bounds   = (-20.0, 20.0),
+    controls = zeros(length(cgrid))
+)
+
+layer = Corleone.SingleShootingLayer(
+    prob, Tsit5();
+    controls = (1 => control_f,),
+    bounds_p = ([0.0, 0.0, 1.0, 2.0, 2.0, 1.0, 1.0],
+                [0.0, 0.0, 1.0, 2.0, 2.0, 1.0, 1.0])
+)
 
  function plot_msd(sol)
      fig = Figure()
@@ -65,22 +79,7 @@ prob = ODEProblem(mass_spring_damper!, u0, tspan, p0)
 
      return fig
  end
- 
-cgrid = collect(0.0:0.2:10)
 
-control_f = ControlParameter(
-    cgrid,
-    name     = :f,
-    bounds   = (-20.0, 20.0),
-    controls = zeros(length(cgrid))
-)
-
-layer = Corleone.SingleShootingLayer(
-    prob, Tsit5();
-    controls = (1 => control_f,),
-    bounds_p = ([0.0, 0.0, 1.0, 2.0, 2.0, 1.0, 1.0],
-                [0.0, 0.0, 1.0, 2.0, 2.0, 1.0, 1.0])
-)
 optprob = OptimizationProblem(layer, AutoForwardDiff(), Val(:ComponentArrays), loss = :x₃)
 
 uopt = solve(
@@ -94,8 +93,8 @@ uopt = solve(
 ps, st = LuxCore.setup(Random.default_rng(), layer)
 ax = getaxes(ComponentArray(ps))
 
-wx = 100.0
-wv = 20.0
+wx    = 100.0
+wv    = 20.0
 xstar = u0[1:3] .+ 1.0
 
 loss_expr = :(x₇ + $(wx/2)*((x₁-$(xstar[1]))^2 + (x₂-$(xstar[2]))^2 + (x₃-$(xstar[3]))^2) + $(wv/2)*(x₄^2 + x₅^2 + x₆^2))
@@ -125,42 +124,42 @@ mkpath("results")
 save("results/single_shooting_result.png", fig_1)
  fig_1
 
-# # Multiple Shooting
+# Multiple Shooting
 
-# shooting_points = [0.0, 2.5, 5.0, 7.5, 10]
+shooting_points = [0.0, 2.5, 5.0, 7.5, 10]
 
-# mslayer = MultipleShootingLayer(
-#     prob, Tsit5(), shooting_points...;
-#     controls = (1 => control_f,),
-#     bounds_p = ([0.0, 0.0, 1.0, 2.0, 2.0, 1.0, 1.0],
-#                 [0.0, 0.0, 1.0, 2.0, 2.0, 1.0, 1.0])
-# )
+mslayer = MultipleShootingLayer(
+    prob, Tsit5(), shooting_points...;
+    controls = (1 => control_f,),
+    bounds_p = ([0.0, 0.0, 1.0, 2.0, 2.0, 1.0, 1.0],
+                [0.0, 0.0, 1.0, 2.0, 2.0, 1.0, 1.0])
+)
 
-# msps, msst = LuxCore.setup(Random.default_rng(), mslayer)
-# msax = getaxes(ComponentArray(msps))
+msps, msst = LuxCore.setup(Random.default_rng(), mslayer)
+msax = getaxes(ComponentArray(msps))
 
-# optprob_ms = OptimizationProblem(mslayer, AutoForwardDiff(), Val(:ComponentArrays), loss = loss_expr)
+optprob_ms = OptimizationProblem(mslayer, AutoForwardDiff(), Val(:ComponentArrays), loss = loss_expr)
 
-# uopt_ms = solve(
-#     optprob_ms, Ipopt.Optimizer(),
-#     tol                   = 1.0e-5,
-#     hessian_approximation = "limited-memory",
-#     max_iter              = 5000,
-#     mu_strategy           = "adaptive"
-# )
+uopt_ms = solve(
+    optprob_ms, Ipopt.Optimizer(),
+    tol                   = 1.0e-5,
+    hessian_approximation = "limited-memory",
+    max_iter              = 5000,
+    mu_strategy           = "adaptive"
+)
 
-# mssol, _ = mslayer(nothing, uopt_ms + zero(ComponentArray(msps)), msst)
+mssol, _ = mslayer(nothing, uopt_ms + zero(ComponentArray(msps)), msst)
 
-# println("Multiple shooting finished.")
-# println("Multiple shooting objective = ", uopt_ms.objective)
-# println("Multiple shooting retcode = ", uopt_ms.retcode)
-# println("Multiple shooting final state = ", mssol.u[end])
+println("Multiple shooting finished.")
+println("Multiple shooting objective = ", uopt_ms.objective)
+println("Multiple shooting retcode = ", uopt_ms.retcode)
+println("Multiple shooting final state = ", mssol.u[end])
 
-# println("First time = ", first(mssol.t))
-# println("Last time  = ", last(mssol.t))
-# println("Stored times = ", mssol.t)
+println("First time = ", first(mssol.t))
+println("Last time  = ", last(mssol.t))
+println("Stored times = ", mssol.t)
 
-#  fig_2 = plot_msd(mssol)
-# save("results/multiple_shooting_result.png", fig_2)
-#  fig_2
+ fig_2 = plot_msd(mssol)
+save("results/multiple_shooting_result.png", fig_2)
+ fig_2
 

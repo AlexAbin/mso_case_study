@@ -10,6 +10,7 @@ using OptimizationMOI
 using Ipopt
 using ComponentArrays
 using CairoMakie  
+using BenchmarkTools
 
 function crane_dynamics!(du, u, p, t)
     x_trolley, x_hook, x_payload  = u[1], u[2], u[3]    # positions
@@ -34,8 +35,11 @@ function crane_dynamics!(du, u, p, t)
     du[5] = (-c_th*(v_hook - v_trolley) - k_th*((x_hook - x_trolley) - l_th) + k_hp*((x_payload - x_hook) - l_hp) + c_hp*(v_payload - v_hook)) / m
     du[6] = (-c_hp*(v_payload - v_hook) - k_hp*((x_payload - x_hook) - l_hp)) / m
 
-    #du[7] = f * v_trolley
+    
+    #**********Objective function (Lagrange)**********
+    # accumulated control effort penalises large forces
     du[7] = 0.5 * f^2
+    #du[7] = f * v_trolley
 end
 
 tspan = (0.0, 10.0)
@@ -45,10 +49,19 @@ p0 = [0.0, 0.0, 0.0, 3.2, 2.3, 5.8, 4.5, 1.0, 1.0, 1.0]
 # (using Parsi et al., 2023 values: k12=3.2,c12=2.3,k23=5.8,c23=4.5,m=1.0, but with m = 1.0 kg for simplicity)
 prob = ODEProblem(crane_dynamics!, u0, tspan, p0)
 
-dt_list = [1.0, 0.5, 0.25, 0.1, 0.05, 0.025]
+dt_list = [1.0, 0.5, 0.25, 0.125, 0.0625, 0.03125]
 
 objective_values = Float64[]
 solve_times      = Float64[]
+
+#**********Objective function (Mayer)**********
+# wx penalizes deviation from desired position, wv penalizes velocity, and xstar is the desired position
+wx = 100.0
+wv = 20.0
+xstar = u0[1:3] .+ 1.0
+
+loss_expr = :(x₇ + $(wx/2)*((x₁-$(xstar[1]))^2 + (x₂-$(xstar[2]))^2 + (x₃-$(xstar[3]))^2) + $(wv/2)*(x₄^2 + x₅^2 + x₆^2))
+println(loss_expr)
 
 println("Convergence Study")
 for dt in dt_list
@@ -72,37 +85,48 @@ for dt in dt_list
     )
 
     ps, st = LuxCore.setup(Random.default_rng(), layer)
+    
+    # Pose and solve the optimization problem
     optprob = OptimizationProblem(layer, AutoForwardDiff(), Val(:ComponentArrays), loss = loss_expr)
+    uopt = solve(optprob, Ipopt.Optimizer(); tol=1.0e-5, hessian_approximation="limited-memory",
+                 max_iter=3000, mu_strategy="adaptive", print_level=0)
 
-    time_taken = @elapsed begin
-        uopt = solve(
-            optprob, Ipopt.Optimizer(),
-            tol                   = 1.0e-5,
-            hessian_approximation = "limited-memory",
-            max_iter              = 3000,
-            mu_strategy           = "adaptive",
-            print_level           = 0  
-        )
-    end
+    time_taken = @belapsed solve($optprob, Ipopt.Optimizer(); tol=1.0e-5,
+                                hessian_approximation="limited-memory", max_iter=3000,
+                                mu_strategy="adaptive", print_level=0)
     
     push!(objective_values, uopt.objective)
     push!(solve_times, time_taken)
 end
 
+function to_fraction_label(dt)
+    dt == 1.0 && return "1"
+    denom = round(Int, 1/dt)
+    return "1/$denom"
+end
+
+
+
 function plot_convergence(dts, objs, times)
     fig = Figure(size = (800, 400))
+    tick_labels = to_fraction_label.(dts)
 
     # Cost 
-    ax1 = CairoMakie.Axis(fig[1, 1], xlabel = "Step Size (dt)", ylabel = "Objective Value")
+    ax1 = CairoMakie.Axis(fig[1, 1], xlabel = "Step Size (dt)", ylabel = "Objective Value",
+    xscale = log2, xticks = (dts, tick_labels))
+
     lines!(ax1, dts, objs, color = :blue, linewidth = 2)
     scatter!(ax1, dts, objs, color = :blue, markersize = 12)
-    ax1.xreversed = true
+    xlims!(ax1, minimum(dts), maximum(dts))
+    #ax1.xreversed = true
 
     # Time
-    ax2 = CairoMakie.Axis(fig[1, 2], xlabel = "Step Size (dt)", ylabel = "Time (s)")
+    ax2 = CairoMakie.Axis(fig[1, 2], xlabel = "Step Size (dt)", ylabel = "Time (s)", 
+    xscale = log2, xticks = (dts, tick_labels))
     lines!(ax2, dts, times, color = :red, linewidth = 2)
     scatter!(ax2, dts, times, color = :red, markersize = 12)
-    ax2.xreversed = true
+    xlims!(ax2, minimum(dts), maximum(dts))
+    #ax2.xreversed = true
 
     return fig
 end
@@ -129,28 +153,30 @@ layer = Corleone.SingleShootingLayer(
                 [0.0, 0.0, 3.2, 2.3, 5.8, 4.5, 1.0, 1.0, 1.0])
 )
 
- function plot_msd(sol)
-     fig = Figure()
+function plot_crane(sol)
 
      colors = Makie.wong_colors()
 
-     ax1 = CairoMakie.Axis(fig[1, 1], title = "Position (m)")
+     fig_position = Figure(size = (800, 400))
+     ax1 = CairoMakie.Axis(fig_position[1, 1], title = "Position (m)")
      lines!(ax1, sol, vars = [:x₁], label = "Trolley Position (x1)", color = colors[1])
      lines!(ax1, sol, vars = [:x₂], label = "Hook Position (x2)"   , color = colors[2])
      lines!(ax1, sol, vars = [:x₃], label = "Payload Position (x3)", color = colors[3])
-     fig[1, 2] = Legend(fig, ax1, framevisible = false)
+     fig_position[1, 2] = Legend(fig_position, ax1, framevisible = false)
 
-     ax2 = CairoMakie.Axis(fig[2, 1], title = "Velocity (m/s)")
+     fig_velocity = Figure(size = (800, 400))
+     ax2 = CairoMakie.Axis(fig_velocity[1, 1], title = "Velocity (m/s)")
      lines!(ax2, sol, vars = [:x₄], label = "Trolley Velocity (x4)", color = colors[1])
      lines!(ax2, sol, vars = [:x₅], label = "Hook Velocity (x5)"   , color = colors[2])
      lines!(ax2, sol, vars = [:x₆], label = "Payload Velocity (x6)", color = colors[3])
-     fig[2, 2] = Legend(fig, ax2, framevisible = false)
+     fig_velocity[1, 2] = Legend(fig_velocity, ax2, framevisible = false)
 
-     ax3 = CairoMakie.Axis(fig[3, 1],xlabel = "Time (s)", title = "Control Force (N)")
+     fig_force = Figure(size = (800, 400))
+     ax3 = CairoMakie.Axis(fig_force[1, 1],xlabel = "Time (s)", title = "Control Force (N)")
      stairs!(ax3, sol, vars = [:f], label = "Motor Force", color = colors[1])
-     fig[3, 2] = Legend(fig, ax3, framevisible = false)
+     fig_force[1, 2] = Legend(fig_force, ax3, framevisible = false)
 
-     return fig
+     return fig_position, fig_velocity, fig_force
  end
 
 optprob = OptimizationProblem(layer, AutoForwardDiff(), Val(:ComponentArrays), loss = :x₇)
@@ -165,14 +191,6 @@ uopt = solve(
 
 ps, st = LuxCore.setup(Random.default_rng(), layer)
 ax = getaxes(ComponentArray(ps))
-
-wx = 100.0
-wv = 20.0
-xstar = u0[1:3] .+ 1.0
-
-loss_expr = :(x₇ + $(wx/2)*((x₁-$(xstar[1]))^2 + (x₂-$(xstar[2]))^2 + (x₃-$(xstar[3]))^2) + $(wv/2)*(x₄^2 + x₅^2 + x₆^2))
-
-println(loss_expr)
 
 optprob = OptimizationProblem(layer, AutoForwardDiff(), Val(:ComponentArrays), loss = loss_expr)
 
@@ -193,9 +211,12 @@ println("Single shooting final state = ", optsol.u[end])
 
 mkpath("results_crane")
 
- fig_1 = plot_msd(optsol)
-save("results_crane/single_shooting_result.png", fig_1)
- fig_1
+fig_position, fig_velocity, fig_force = plot_crane(optsol)
+
+fig_1 = plot_crane(optsol)
+save("results_crane/single_shooting_positions.png", fig_position)
+save("results_crane/single_shooting_velocities.png", fig_velocity)
+save("results_crane/single_shooting_control.png", fig_force)
 
 # Multiple Shooting
 
@@ -232,7 +253,10 @@ println("First time = ", first(mssol.t))
 println("Last time  = ", last(mssol.t))
 println("Stored times = ", mssol.t)
 
- fig_2 = plot_msd(mssol)
- save("results_crane/multiple_shooting_result.png", fig_2)
- fig_2
+fig_position, fig_velocity, fig_force =  plot_crane(mssol)
+
+save("results_crane/multiple_shooting_positions.png", fig_position)
+save("results_crane/multiple_shooting_velocities.png", fig_velocity)
+save("results_crane/multiple_shooting_control.png", fig_force)
+
 
